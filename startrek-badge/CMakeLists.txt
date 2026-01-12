@@ -8,4 +8,5 @@ target_sources(app PRIVATE
     src/le_audio.c
     src/battery.c
     src/led_ctrl.c
+    src/audio_proc.c
 )
