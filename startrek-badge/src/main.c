@@ -14,6 +14,7 @@
 #include "le_audio.h"
 #include "battery.h"
 #include "led_ctrl.h"
+#include "audio_proc.h"
 
 LOG_MODULE_REGISTER(main);
 
@@ -23,7 +24,11 @@ LOG_MODULE_REGISTER(main);
 static const struct device *i2s_dev = DEVICE_DT_GET(DT_ALIAS(i2s_dev));
 
 /* Audio Buffers */
-#define PCM_BLOCK_SIZE 320
+/* PCM_BLOCK_SIZE increased to 640 to hold stereo samples (2 channels * 160 samples * 2 bytes) */
+#define PCM_BLOCK_SIZE 640
+/* Mono Block Size for sending */
+#define MONO_BLOCK_SIZE 320
+
 /* Increased slab count to support sound effects queuing */
 K_MEM_SLAB_DEFINE_STATIC(i2s_mem_slab, PCM_BLOCK_SIZE, 16, 4);
 
@@ -92,10 +97,13 @@ static void play_chirp(void)
             return;
         }
         pcm = (int16_t *)mem_block;
-        // Fill block (160 samples per block)
+        // Fill block (160 stereo samples per block -> 320 values)
         for (int i = 0; i < 160; i++) {
             // Square wave: 0-3 High, 4-7 Low (repeat every 8 samples)
-            pcm[i] = ((i % 8) < 4) ? 0x2000 : -0x2000; // ~12% amplitude
+            int16_t val = ((i % 8) < 4) ? 0x2000 : -0x2000; // ~12% amplitude
+            // Interleaved Stereo: Left = val, Right = val
+            pcm[2 * i] = val;
+            pcm[2 * i + 1] = val;
         }
         i2s_write(i2s_dev, mem_block, PCM_BLOCK_SIZE);
     }
@@ -107,7 +115,9 @@ static void play_chirp(void)
         pcm = (int16_t *)mem_block;
         for (int i = 0; i < 160; i++) {
              // Square wave: 0-7 High, 8-15 Low (repeat every 16 samples)
-             pcm[i] = ((i % 16) < 8) ? 0x2000 : -0x2000;
+             int16_t val = ((i % 16) < 8) ? 0x2000 : -0x2000;
+             pcm[2 * i] = val;
+             pcm[2 * i + 1] = val;
         }
         i2s_write(i2s_dev, mem_block, PCM_BLOCK_SIZE);
     }
@@ -136,8 +146,28 @@ static void audio_recv_cb(const uint8_t *data, size_t len)
     int ret = k_mem_slab_alloc(&i2s_mem_slab, &mem_block, K_NO_WAIT);
     if (ret < 0) return;
 
-    size_t copy_len = len > PCM_BLOCK_SIZE ? PCM_BLOCK_SIZE : len;
-    memcpy(mem_block, data, copy_len);
+    int16_t *pcm_out = (int16_t *)mem_block;
+    const int16_t *pcm_in = (const int16_t *)data;
+    size_t sample_count = len / sizeof(int16_t);
+
+    // Safety check for buffer overrun
+    if (sample_count > 160) sample_count = 160;
+
+    // Expand Mono to Stereo
+    for (size_t i = 0; i < sample_count; i++) {
+        pcm_out[2 * i] = pcm_in[i];
+        pcm_out[2 * i + 1] = pcm_in[i];
+    }
+
+    // If input was shorter, pad with silence?
+    // Usually len matches expected frame.
+    // However, slab size is now 640 bytes. We should ensure we write full block or handle it.
+    // The previous code just memcpy'd.
+
+    // Fill remaining buffer with 0 if necessary
+    if (sample_count < 160) {
+         memset(&pcm_out[2 * sample_count], 0, (160 - sample_count) * 2 * sizeof(int16_t));
+    }
 
     ret = i2s_write(i2s_dev, mem_block, PCM_BLOCK_SIZE);
     if (ret < 0) {
@@ -153,7 +183,7 @@ static int i2s_setup(void)
     }
 
     i2s_cfg.word_size = 16;
-    i2s_cfg.channels = 1; // Mono
+    i2s_cfg.channels = 2; // Stereo
     i2s_cfg.format = I2S_FMT_DATA_FORMAT_I2S;
     i2s_cfg.options = I2S_OPT_BIT_CLK_MASTER | I2S_OPT_FRAME_CLK_MASTER;
     i2s_cfg.frame_clk_freq = 16000; // Match 16kHz
@@ -185,6 +215,8 @@ void main(void)
 
     err = battery_init();
     if (err) LOG_ERR("Failed to init battery (err %d)", err);
+
+    audio_proc_init();
 
     err = i2s_setup();
     if (err) LOG_ERR("Failed to init I2S (err %d)", err);
@@ -222,11 +254,31 @@ void main(void)
 
     while (1) {
         // Handle Mic Data
-        size_t size = PCM_BLOCK_SIZE;
+        size_t size = PCM_BLOCK_SIZE; // 640 bytes (Stereo)
         err = i2s_read(i2s_dev, &mic_buffer, &size);
         if (err == 0) {
+            // Process Stereo -> Mono
+            // We reuse the first half of the buffer for the mono output to save memory,
+            // or we could use a separate buffer.
+            // le_audio_send copies data into its own pool, so we can use a temporary buffer
+            // or just overwrite the mic_buffer since the input is interleaved.
+            // But we need to be careful not to overwrite data we haven't read yet if we do it in-place?
+            // In-place Stereo -> Mono:
+            // Input: L0 R0 L1 R1 ...
+            // Output: M0 M1 ...
+            // M0 writes to index 0. Input L0 is index 0. Safe.
+            // M1 writes to index 1. Input L1 is index 2. Safe.
+            // So in-place processing is safe.
+
+            int16_t *samples = (int16_t *)mic_buffer;
+            size_t sample_count = size / (sizeof(int16_t) * 2); // 320 / 2 = 160 samples (frames)
+
+            audio_proc_process(samples, samples, sample_count);
+
             // Note: Sending raw PCM. For real BAP compliance, this should be LC3 encoded.
-            le_audio_send(mic_buffer, size);
+            // Send mono data (sample_count * sizeof(int16_t) bytes)
+            le_audio_send((uint8_t *)samples, sample_count * sizeof(int16_t));
+
             k_mem_slab_free(&i2s_mem_slab, &mic_buffer);
         }
 
