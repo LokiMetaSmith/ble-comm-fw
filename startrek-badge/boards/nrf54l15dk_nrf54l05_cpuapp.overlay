@@ -8,6 +8,12 @@
 	aliases {
 		touch-button = &button2;
 		i2s-dev = &i2s20;
+		audio-amp = &max98357a;
+	};
+
+	max98357a: max98357a {
+		compatible = "maxim,max98357a";
+		sd-mode-gpios = <&gpio1 5 GPIO_ACTIVE_HIGH>;
 	};
 };
 

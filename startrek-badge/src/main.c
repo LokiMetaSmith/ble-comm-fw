@@ -21,6 +21,7 @@ LOG_MODULE_REGISTER(main);
 #define DEVICE_NAME_LEN (sizeof(DEVICE_NAME_PREFIX) + 4)
 
 static const struct device *i2s_dev = DEVICE_DT_GET(DT_ALIAS(i2s_dev));
+static const struct device *amp_dev = DEVICE_DT_GET(DT_ALIAS(audio_amp));
 
 /* Audio Buffers */
 #define PCM_BLOCK_SIZE 320
@@ -188,6 +189,12 @@ void main(void)
 
     err = i2s_setup();
     if (err) LOG_ERR("Failed to init I2S (err %d)", err);
+
+    if (!device_is_ready(amp_dev)) {
+        LOG_WRN("Audio amplifier not ready");
+    } else {
+        LOG_INF("Audio amplifier initialized");
+    }
 
     get_random_name(device_name, sizeof(device_name));
     bt_set_name(device_name);
