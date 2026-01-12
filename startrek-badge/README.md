@@ -32,8 +32,10 @@ This project contains the firmware for a Star Trek Com Badge replica based on th
 ## Setup and Build
 
 1. **Initialize Workspace** (if not already done):
+   Since this project uses Nordic specific drivers (e.g. `dk_buttons_and_leds`), it is recommended to initialize the workspace using the nRF Connect SDK manifest.
+
    ```bash
-   west init -m https://github.com/zephyrproject-rtos/zephyr --mr main my-workspace
+   west init -m https://github.com/nrfconnect/sdk-nrf --mr main my-workspace
    cd my-workspace
    west update
    ```
