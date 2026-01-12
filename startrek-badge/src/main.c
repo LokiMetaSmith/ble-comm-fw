@@ -9,6 +9,7 @@
 #include <zephyr/logging/log.h>
 #include <dk_buttons_and_leds.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "le_audio.h"
 #include "battery.h"
@@ -22,26 +23,9 @@ LOG_MODULE_REGISTER(main);
 static const struct device *i2s_dev = DEVICE_DT_GET(DT_ALIAS(i2s_dev));
 
 /* Audio Buffers */
-#define AUDIO_BLOCK_SIZE_BYTES 80 // 16kHz * 2 bytes * 10ms (mono) = 320 bytes? No wait.
-// LC3 frame size for 16kHz 10ms is typically 40-120 bytes encoded.
-// But I2S is PCM.
-// 16kHz sample rate, 16-bit depth, mono = 32000 bytes/sec.
-// 10ms = 320 bytes.
-// So our I2S block size should match the PCM requirements, NOT the LC3 encoded size.
-// The LE Audio stack (LC3 codec) handles compression.
-// Wait, if we are passing data to 'le_audio_send', are we passing PCM or Encoded?
-// Zephyr BAP stack usually expects Encoded data if we don't have a software codec layer integrated
-// or if we are just a conduit.
-// However, the prompt says "flush out".
-// If we want to send *audio*, we need to Encode it.
-// Since we don't have a full LC3 encoder in this simple loop, we will assume
-// for the "minimal implementation" that we are just piping data.
-// But realistically, I2S gives PCM. BAP sends LC3.
-// We should probably check if we can use the software codec offload or just stub it.
-// For now, let's stick to the structure. I'll use a block size of 320 bytes for PCM.
-
 #define PCM_BLOCK_SIZE 320
-K_MEM_SLAB_DEFINE_STATIC(i2s_mem_slab, PCM_BLOCK_SIZE, 4, 4);
+/* Increased slab count to support sound effects queuing */
+K_MEM_SLAB_DEFINE_STATIC(i2s_mem_slab, PCM_BLOCK_SIZE, 16, 4);
 
 /* I2S Config */
 struct i2s_config i2s_cfg;
@@ -84,12 +68,63 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
     .disconnected = disconnected,
 };
 
+/* Sound Effect Generation */
+static void play_chirp(void)
+{
+    // Generate 100ms chirp: 50ms High (2kHz), 50ms Low (1kHz)
+    // 50ms at 10ms/block = 5 blocks. Total 10 blocks.
+
+    // 16kHz sample rate.
+    // 2kHz = 8 samples/cycle. (4 samples high, 4 low)
+    // 1kHz = 16 samples/cycle. (8 samples high, 8 low)
+
+    int16_t *pcm;
+    void *mem_block;
+    int ret;
+
+    LOG_INF("Playing Chirp");
+
+    // Part 1: High Tone (2kHz) - 5 Blocks
+    for (int b = 0; b < 5; b++) {
+        ret = k_mem_slab_alloc(&i2s_mem_slab, &mem_block, K_NO_WAIT);
+        if (ret < 0) {
+            LOG_WRN("Failed to alloc slab for chirp");
+            return;
+        }
+        pcm = (int16_t *)mem_block;
+        // Fill block (160 samples per block)
+        for (int i = 0; i < 160; i++) {
+            // Square wave: 0-3 High, 4-7 Low (repeat every 8 samples)
+            pcm[i] = ((i % 8) < 4) ? 0x2000 : -0x2000; // ~12% amplitude
+        }
+        i2s_write(i2s_dev, mem_block, PCM_BLOCK_SIZE);
+    }
+
+    // Part 2: Low Tone (1kHz) - 5 Blocks
+    for (int b = 0; b < 5; b++) {
+        ret = k_mem_slab_alloc(&i2s_mem_slab, &mem_block, K_NO_WAIT);
+        if (ret < 0) return;
+        pcm = (int16_t *)mem_block;
+        for (int i = 0; i < 160; i++) {
+             // Square wave: 0-7 High, 8-15 Low (repeat every 16 samples)
+             pcm[i] = ((i % 16) < 8) ? 0x2000 : -0x2000;
+        }
+        i2s_write(i2s_dev, mem_block, PCM_BLOCK_SIZE);
+    }
+}
+
 static void button_handler(uint32_t button_state, uint32_t has_changed)
 {
+    /*
+     * Using DK_BTN3 as a proxy for the touch button during Phase 1.
+     * The device tree alias `touch-button` maps to &button2, but the DK library
+     * uses hardcoded button masks. In the actual board file, &button2 corresponds to DK_BTN3_MSK.
+     */
     if (has_changed & DK_BTN3_MSK) {
         if (button_state & DK_BTN3_MSK) {
-            LOG_INF("Touch Button Pressed - Toggle Play/Pause");
-            // Here we would toggle streaming state or send a command
+            LOG_INF("Touch Button Pressed");
+            led_ctrl_flash_feedback();
+            play_chirp();
         }
     }
 }
@@ -97,32 +132,17 @@ static void button_handler(uint32_t button_state, uint32_t has_changed)
 /* Audio Data Callbacks */
 static void audio_recv_cb(const uint8_t *data, size_t len)
 {
-    // Received encoded audio from BLE.
-    // In a real system, we decode LC3 -> PCM.
-    // Here we just write to I2S (assuming it was PCM for loopback test, or just noise)
-    // To properly support this, we'd need an LC3 decoder.
-
-    // Allocate I2S buffer
     void *mem_block;
     int ret = k_mem_slab_alloc(&i2s_mem_slab, &mem_block, K_NO_WAIT);
-    if (ret < 0) {
-        // Discard
-        return;
-    }
+    if (ret < 0) return;
 
-    // Copy (and pad if necessary since PCM > LC3 encoded size)
-    // Just a placeholder copy
     size_t copy_len = len > PCM_BLOCK_SIZE ? PCM_BLOCK_SIZE : len;
     memcpy(mem_block, data, copy_len);
 
-    // Write to I2S
     ret = i2s_write(i2s_dev, mem_block, PCM_BLOCK_SIZE);
     if (ret < 0) {
         k_mem_slab_free(&i2s_mem_slab, &mem_block);
     }
-    // i2s_write frees the slab when done usually, depending on trigger?
-    // Wait, i2s_write copies or takes ownership? Zephyr I2S driver takes ownership if trigger started?
-    // Actually typically you pass the slab to config and it manages it.
 }
 
 static int i2s_setup(void)
@@ -158,7 +178,6 @@ void main(void)
 
     LOG_INF("Starting Star Trek Com Badge Firmware");
 
-    // Init Modules
     led_ctrl_init();
 
     err = dk_buttons_init(button_handler);
@@ -167,15 +186,9 @@ void main(void)
     err = battery_init();
     if (err) LOG_ERR("Failed to init battery (err %d)", err);
 
-    // Initialize I2S
     err = i2s_setup();
-    if (err) {
-        LOG_ERR("Failed to init I2S (err %d)", err);
-    } else {
-        LOG_INF("I2S Initialized");
-    }
+    if (err) LOG_ERR("Failed to init I2S (err %d)", err);
 
-    // Bluetooth Setup
     get_random_name(device_name, sizeof(device_name));
     bt_set_name(device_name);
 
@@ -197,28 +210,26 @@ void main(void)
     led_ctrl_set_state(LED_STATE_ADVERTISING);
     LOG_INF("Advertising started as %s", device_name);
 
-    // Trigger I2S RX
+    // Pre-fill TX to prevent immediate underrun
+    void *silence_block;
+    if (k_mem_slab_alloc(&i2s_mem_slab, &silence_block, K_NO_WAIT) == 0) {
+        memset(silence_block, 0, PCM_BLOCK_SIZE);
+        i2s_write(i2s_dev, silence_block, PCM_BLOCK_SIZE);
+    }
+
     i2s_trigger(i2s_dev, I2S_DIR_RX, I2S_TRIGGER_START);
     i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_START);
 
-    // Main loop
     while (1) {
-        // Handle Mic Data (Source)
-        // Read from I2S
+        // Handle Mic Data
         size_t size = PCM_BLOCK_SIZE;
         err = i2s_read(i2s_dev, &mic_buffer, &size);
         if (err == 0) {
-            // We have PCM data.
-            // Send to LE Audio (needs encoding, but we send raw for now as placeholder)
-            // Ideally we call le_audio_send(mic_buffer, PCM_BLOCK_SIZE);
-            // But LE Audio expects ~40-120 bytes encoded. Sending 320 bytes might fail or fragment.
-            // Just sending first 100 bytes as dummy payload
-            le_audio_send(mic_buffer, 100);
-
+            // Note: Sending raw PCM. For real BAP compliance, this should be LC3 encoded.
+            le_audio_send(mic_buffer, size);
             k_mem_slab_free(&i2s_mem_slab, &mic_buffer);
         }
 
-        // Battery Monitor (every 10s)
         static int64_t next_batt_check = 0;
         int64_t now = k_uptime_get();
 
@@ -235,6 +246,6 @@ void main(void)
         }
 
         led_ctrl_process();
-        k_sleep(K_MSEC(10)); // Faster loop for audio handling
+        k_sleep(K_MSEC(10));
     }
 }

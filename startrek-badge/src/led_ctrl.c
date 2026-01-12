@@ -6,6 +6,9 @@ static enum led_state current_state = LED_STATE_IDLE;
 static int64_t next_toggle_time = 0;
 static bool led_on = false;
 
+/* Feedback Flash State */
+static int64_t feedback_end_time = 0;
+
 /*
  * LED Mapping:
  * LED1 (Green): Connection Status
@@ -30,9 +33,30 @@ enum led_state led_ctrl_get_state(void)
     return current_state;
 }
 
+void led_ctrl_flash_feedback(void)
+{
+    // Flash for 200ms
+    feedback_end_time = k_uptime_get() + 200;
+    dk_set_leds(DK_ALL_LEDS_MSK);
+}
+
 void led_ctrl_process(void)
 {
     int64_t now = k_uptime_get();
+
+    // Check for feedback override
+    if (now < feedback_end_time) {
+        // Keep LEDs on, skip normal processing
+        // But ensure we actually turned them on?
+        // led_ctrl_flash_feedback calls set_leds, so we assume they are on.
+        return;
+    } else if (feedback_end_time > 0 && now >= feedback_end_time) {
+        // Just finished feedback, reset feedback timer and clear leds to restore state
+        feedback_end_time = 0;
+        dk_set_leds(0);
+        // Force immediate update of state
+        next_toggle_time = 0;
+    }
 
     if (now < next_toggle_time) {
         return;

@@ -12,6 +12,7 @@ enum led_state {
 void led_ctrl_init(void);
 void led_ctrl_set_state(enum led_state state);
 enum led_state led_ctrl_get_state(void);
+void led_ctrl_flash_feedback(void);
 void led_ctrl_process(void);
 
 #endif

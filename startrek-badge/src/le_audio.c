@@ -13,7 +13,11 @@ LOG_MODULE_REGISTER(le_audio);
 static struct bt_bap_stream streams[2]; // 0: Sink, 1: Source
 static le_audio_recv_cb_t recv_cb = NULL;
 
-NET_BUF_POOL_FIXED_DEFINE(tx_pool, 2, 128, 8, NULL);
+/*
+ * Pool for ISO transmission.
+ * Sized to hold raw PCM samples (320 bytes) for testing, plus headers.
+ */
+NET_BUF_POOL_FIXED_DEFINE(tx_pool, 2, 350, 8, NULL);
 
 /*
  * LC3 Codec Capabilities (PACS)
@@ -26,6 +30,10 @@ static const struct bt_audio_codec_cap lc3_codec_cap = BT_AUDIO_CODEC_CAP_LC3(
     40u, 120u, 1u,
     (BT_AUDIO_CONTEXT_TYPE_CONVERSATIONAL | BT_AUDIO_CONTEXT_TYPE_MEDIA)
 );
+
+/* Capability wrappers for registration */
+static struct bt_pacs_cap cap_sink = { .codec_cap = &lc3_codec_cap };
+static struct bt_pacs_cap cap_source = { .codec_cap = &lc3_codec_cap };
 
 /*
  * Stream Callbacks
@@ -135,11 +143,11 @@ void le_audio_init(void)
 
     // Register PACS capabilities
     // Sink (Speaker)
-    err = bt_pacs_cap_register(BT_AUDIO_DIR_SINK, &lc3_codec_cap);
+    err = bt_pacs_cap_register(BT_AUDIO_DIR_SINK, &cap_sink);
     if (err) LOG_ERR("Failed to register Sink PAC (err %d)", err);
 
     // Source (Mic)
-    err = bt_pacs_cap_register(BT_AUDIO_DIR_SOURCE, &lc3_codec_cap);
+    err = bt_pacs_cap_register(BT_AUDIO_DIR_SOURCE, &cap_source);
     if (err) LOG_ERR("Failed to register Source PAC (err %d)", err);
 
     err = bt_bap_unicast_server_register(&unicast_server_cbs);
