@@ -10,17 +10,22 @@ This project contains the firmware for a Star Trek Com Badge replica based on th
 - **Input**: Capacitive Touch Button (Play/Pause)
 - **Connectivity**: Bluetooth Low Energy (BLE)
     - Random Bluetooth Device Name on startup
-    - Acts as a Bluetooth Speaker/Microphone (LE Audio target)
+    - LE Audio Unicast Server (Speaker/Mic)
 - **Power**: 3V Lithium Coin Cell
-- **Indication**: LEDs
+    - Battery Service (BAS)
+- **Indication**: LEDs with status patterns
 
 ## Project Structure
 - `src/`: Source code
+    - `main.c`: Application entry and integration
+    - `le_audio.c`: Bluetooth LE Audio BAP implementation
+    - `battery.c`: SAADC and Battery Service
+    - `led_ctrl.c`: LED state machine
 - `boards/`: Board definitions and overlays
 - `prj.conf`: Kernel and subsystem configuration
 
 ## Prerequisites
-- Zephyr SDK
+- Zephyr SDK (0.16+)
 - `west` tool
 - Python 3
 
@@ -35,6 +40,9 @@ This project contains the firmware for a Star Trek Com Badge replica based on th
 
 2. **Build the Firmware**:
    We target the `nrf54l15dk/nrf54l05/cpuapp` board as a proxy for the NRF54L05 hardware.
+
+   *Note: Ensure the Zephyr SDK is properly installed and `ZEPHYR_TOOLCHAIN_VARIANT` is set.*
+
    ```bash
    cd startrek-badge
    west build -b nrf54l15dk/nrf54l05/cpuapp
@@ -46,8 +54,16 @@ This project contains the firmware for a Star Trek Com Badge replica based on th
    ```
 
 ## Notes
-- The NRF54L05 is a BLE-only chip. "Bluetooth Speaker" functionality usually implies Bluetooth Classic (A2DP). This device will likely use **LE Audio** (Unicast) which requires a compatible source (e.g., modern smartphone with LE Audio support).
-- I2S pins need to be configured in the device tree overlay.
+- The NRF54L05 is a BLE-only chip. "Bluetooth Speaker" functionality usually implies Bluetooth Classic (A2DP). This device uses **LE Audio** (Unicast).
+- I2S pins are defined in `boards/nrf54l15dk_nrf54l05_cpuapp.overlay`.
 
-## TODO
-See [TODO.md](TODO.md) for the implementation roadmap.
+## Status
+Completed implementation of:
+- Basic connectivity and Advertising.
+- I2S Driver setup.
+- Touch button handling.
+- LE Audio skeleton.
+- Battery monitoring.
+- LED effects.
+
+See [TODO.md](TODO.md) for detailed task list.

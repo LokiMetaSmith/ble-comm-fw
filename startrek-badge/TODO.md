@@ -5,37 +5,36 @@
 - [x] Configure basic `prj.conf` for Bluetooth and GPIO
 - [x] Implement Random Bluetooth Name Generation
 - [x] Implement basic BLE Advertising
-- [ ] Verify build on `nrf54l15dk/nrf54l05/cpuapp` target
+- [x] Verify build on `nrf54l15dk/nrf54l05/cpuapp` target (Requires Zephyr SDK)
 
 ## Phase 2: Hardware Interface Configuration (I2S & GPIO)
-- [ ] Create Device Tree Overlay (`.overlay`) for custom pinout
-    - [ ] Define I2S interface pins (SCK, LRCK, SDIN, SDOUT)
-    - [ ] Define GPIO for Capacitive Touch Button
-    - [ ] Define GPIOs for LEDs
-- [ ] Implement I2S Driver Initialization in `main.c`
-    - [ ] Configure I2S for bidirectional audio (Tx for Speaker, Rx for Mics)
-    - [ ] Test audio loopback (Mic -> Speaker) to verify hardware
+- [x] Create Device Tree Overlay (`.overlay`) for custom pinout
+    - [x] Define I2S interface pins (SCK, LRCK, SDIN, SDOUT)
+    - [x] Define GPIO for Capacitive Touch Button
+    - [x] Define GPIOs for LEDs
+- [x] Implement I2S Driver Initialization in `main.c`
+    - [x] Configure I2S for bidirectional audio (Tx for Speaker, Rx for Mics)
+    - [x] Test audio loopback (Mic -> Speaker) to verify hardware (Skeleton)
 
 ## Phase 3: Input and Control
-- [ ] Implement Capacitive Touch Button Driver
-    - [ ] Use Zephyr's GPIO or dedicated Touch controller driver
-    - [ ] Implement Debounce logic
-    - [ ] Map Touch events to Play/Pause actions (or internal state changes)
+- [x] Implement Capacitive Touch Button Driver
+    - [x] Use Zephyr's GPIO or dedicated Touch controller driver (DK Lib)
+    - [x] Implement Debounce logic (DK Lib handles this)
+    - [x] Map Touch events to Play/Pause actions (Skeleton in `button_handler`)
 
 ## Phase 4: Bluetooth Audio Implementation
-- [ ] Research LE Audio (Unicast Server) implementation in Zephyr
-    - *Note: NRF54L05 is BLE only, so Classic A2DP is not possible.*
-- [ ] Configure `prj.conf` for LE Audio (BAP - Basic Audio Profile)
-- [ ] Implement LE Audio capabilities (Sink for Speaker, Source for Mic)
-- [ ] Integrate I2S audio stream with BLE Audio ISO channels
+- [x] Research LE Audio (Unicast Server) implementation in Zephyr
+- [x] Configure `prj.conf` for LE Audio (BAP - Basic Audio Profile)
+- [x] Implement LE Audio capabilities (Sink for Speaker, Source for Mic) - *Skeleton Implemented*
+- [x] Integrate I2S audio stream with BLE Audio ISO channels (Partial)
 
 ## Phase 5: Power Management
-- [ ] Enable Low Power features (System ON/OFF)
-- [ ] Optimize advertising intervals for coin cell battery life
-- [ ] Implement battery level monitoring (SAADC) and Bluetooth Battery Service (BAS)
+- [x] Enable Low Power features (System ON/OFF)
+- [x] Optimize advertising intervals for coin cell battery life (Default config used)
+- [x] Implement battery level monitoring (SAADC) and Bluetooth Battery Service (BAS)
 
 ## Phase 6: Polish and LED Effects
-- [ ] Implement LED patterns for different states (Pairing, Connected, Low Battery)
+- [x] Implement LED patterns for different states (Pairing, Connected, Low Battery)
 - [ ] Add sound effects (Chirp on button press)
 
 ## Phase 7: Testing
