@@ -135,6 +135,7 @@ static void button_handler(uint32_t button_state, uint32_t has_changed)
         if (button_state & DK_BTN3_MSK) {
             LOG_INF("Touch Button Pressed");
             led_ctrl_flash_feedback();
+            le_audio_toggle_mute();
             play_chirp();
         }
     }

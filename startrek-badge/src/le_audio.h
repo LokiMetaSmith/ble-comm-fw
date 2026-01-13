@@ -15,4 +15,8 @@ typedef void (*le_audio_recv_cb_t)(const uint8_t *data, size_t len);
 // Register a callback for received audio
 void le_audio_register_recv_cb(le_audio_recv_cb_t cb);
 
+// Mute Control
+int le_audio_set_mute(bool mute);
+int le_audio_toggle_mute(void);
+
 #endif

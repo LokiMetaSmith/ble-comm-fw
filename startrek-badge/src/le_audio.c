@@ -4,6 +4,7 @@
 #if defined(CONFIG_BT_BAP_UNICAST_SERVER)
 #include <zephyr/bluetooth/audio/bap.h>
 #include <zephyr/bluetooth/audio/pacs.h>
+#include <zephyr/bluetooth/audio/mics.h>
 #endif
 #include <zephyr/logging/log.h>
 #include <zephyr/net/buf.h>
@@ -16,6 +17,8 @@ LOG_MODULE_REGISTER(le_audio);
 
 static struct bt_bap_stream streams[2]; // 0: Sink, 1: Source
 static le_audio_recv_cb_t recv_cb = NULL;
+static struct bt_mics *mics;
+static bool is_muted = false;
 
 /*
  * Pool for ISO transmission.
@@ -160,7 +163,42 @@ void le_audio_init(void)
         return;
     }
 
+    struct bt_mics_register_param mics_param = {0};
+    err = bt_mics_register(&mics_param, &mics);
+    if (err) {
+        LOG_ERR("Failed to register MICS (err %d)", err);
+    } else {
+        LOG_INF("MICS Registered");
+        // Initial state: Muted (Channel Closed)
+        le_audio_set_mute(true);
+    }
+
     LOG_INF("LE Audio Unicast Server Initialized with LC3 PACS");
+}
+
+int le_audio_set_mute(bool mute)
+{
+    int err = 0;
+    if (!mics) return -ENODEV;
+
+    if (mute) {
+        err = bt_mics_mute(mics);
+    } else {
+        err = bt_mics_unmute(mics);
+    }
+
+    if (err) {
+        LOG_ERR("Failed to set MICS mute state %d (err %d)", mute, err);
+    } else {
+        is_muted = mute;
+        LOG_INF("MICS state updated: %s", mute ? "Muted" : "Unmuted");
+    }
+    return err;
+}
+
+int le_audio_toggle_mute(void)
+{
+    return le_audio_set_mute(!is_muted);
 }
 
 int le_audio_send(const uint8_t *data, size_t len)
@@ -168,6 +206,14 @@ int le_audio_send(const uint8_t *data, size_t len)
     struct bt_bap_stream *stream = &streams[1]; // Source stream
     struct net_buf *buf;
     int err;
+
+    // If muted, we can either send silence or nothing.
+    // Sending nothing might cause stream timeouts if ISO requires data.
+    // Standard practice is to send silence or stop streaming.
+    // Here we will zero out the data if muted, but still send it to keep the ISO channel alive.
+    if (is_muted) {
+        // We can't easily modify the const data, so we need to handle it during buf copy
+    }
 
     // Minimal implementation safety check
     // Real implementation should fragment or encode data
@@ -181,7 +227,11 @@ int le_audio_send(const uint8_t *data, size_t len)
         return -ENOMEM;
     }
 
-    net_buf_add_mem(buf, data, len);
+    if (is_muted) {
+        memset(net_buf_add(buf, len), 0, len);
+    } else {
+        net_buf_add_mem(buf, data, len);
+    }
 
     err = bt_bap_stream_send(stream, buf, 0); // Seq num 0 for now
     if (err < 0) {
@@ -214,4 +264,9 @@ void le_audio_register_recv_cb(le_audio_recv_cb_t cb)
     LOG_INF("LE Audio receive callback registered (stub)");
 }
 
+#endif /* !CONFIG_BT_BAP_UNICAST_SERVER */
+
+#if !defined(CONFIG_BT_BAP_UNICAST_SERVER)
+int le_audio_set_mute(bool mute) { return 0; }
+int le_audio_toggle_mute(void) { return 0; }
 #endif
