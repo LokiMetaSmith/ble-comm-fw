@@ -1,14 +1,18 @@
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/audio/audio.h>
+#if defined(CONFIG_BT_BAP_UNICAST_SERVER)
 #include <zephyr/bluetooth/audio/bap.h>
 #include <zephyr/bluetooth/audio/pacs.h>
+#endif
 #include <zephyr/logging/log.h>
 #include <zephyr/net/buf.h>
 
 #include "le_audio.h"
 
 LOG_MODULE_REGISTER(le_audio);
+
+#if defined(CONFIG_BT_BAP_UNICAST_SERVER)
 
 static struct bt_bap_stream streams[2]; // 0: Sink, 1: Source
 static le_audio_recv_cb_t recv_cb = NULL;
@@ -192,3 +196,22 @@ void le_audio_register_recv_cb(le_audio_recv_cb_t cb)
 {
     recv_cb = cb;
 }
+
+#else /* !CONFIG_BT_BAP_UNICAST_SERVER */
+
+void le_audio_init(void)
+{
+    LOG_INF("LE Audio disabled for this build");
+}
+
+int le_audio_send(const uint8_t *data, size_t len)
+{
+    return 0;
+}
+
+void le_audio_register_recv_cb(le_audio_recv_cb_t cb)
+{
+    LOG_INF("LE Audio receive callback registered (stub)");
+}
+
+#endif

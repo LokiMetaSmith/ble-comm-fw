@@ -14,6 +14,7 @@
 #include "le_audio.h"
 #include "battery.h"
 #include "led_ctrl.h"
+#include "audio_proc.h"
 
 LOG_MODULE_REGISTER(main);
 
@@ -21,9 +22,18 @@ LOG_MODULE_REGISTER(main);
 #define DEVICE_NAME_LEN (sizeof(DEVICE_NAME_PREFIX) + 4)
 
 static const struct device *i2s_dev = DEVICE_DT_GET(DT_ALIAS(i2s_dev));
+static const struct device *amp_dev = DEVICE_DT_GET(DT_ALIAS(audio_amp));
 
 /* Audio Buffers */
-#define PCM_BLOCK_SIZE 320
+/*
+ * INMP441 Microphones require 64x fs clock.
+ * For 16kHz, this implies 32-bit slots per channel (Stereo).
+ * 160 samples * 2 channels * 4 bytes/sample = 1280 bytes.
+ */
+#define I2S_BLOCK_SAMPLES 160
+#define PCM_BLOCK_SIZE (I2S_BLOCK_SAMPLES * 2 * 4) // 1280 bytes
+#define MONO_BLOCK_SIZE (I2S_BLOCK_SAMPLES * 2)    // 320 bytes (16-bit Mono)
+
 /* Increased slab count to support sound effects queuing */
 K_MEM_SLAB_DEFINE_STATIC(i2s_mem_slab, PCM_BLOCK_SIZE, 16, 4);
 
@@ -78,11 +88,14 @@ static void play_chirp(void)
     // 2kHz = 8 samples/cycle. (4 samples high, 4 low)
     // 1kHz = 16 samples/cycle. (8 samples high, 8 low)
 
-    int16_t *pcm;
+    int32_t *pcm;
     void *mem_block;
     int ret;
 
     LOG_INF("Playing Chirp");
+
+    // Amplitude for 32-bit: 0x2000 (from 16-bit) << 16
+    const int32_t amp = ((int32_t)0x2000) << 16;
 
     // Part 1: High Tone (2kHz) - 5 Blocks
     for (int b = 0; b < 5; b++) {
@@ -91,11 +104,13 @@ static void play_chirp(void)
             LOG_WRN("Failed to alloc slab for chirp");
             return;
         }
-        pcm = (int16_t *)mem_block;
-        // Fill block (160 samples per block)
-        for (int i = 0; i < 160; i++) {
+        pcm = (int32_t *)mem_block;
+        // Fill block (160 samples per block, Stereo)
+        for (int i = 0; i < I2S_BLOCK_SAMPLES; i++) {
             // Square wave: 0-3 High, 4-7 Low (repeat every 8 samples)
-            pcm[i] = ((i % 8) < 4) ? 0x2000 : -0x2000; // ~12% amplitude
+            int32_t val = ((i % 8) < 4) ? amp : -amp;
+            pcm[2*i] = val;     // Left
+            pcm[2*i+1] = val;   // Right
         }
         i2s_write(i2s_dev, mem_block, PCM_BLOCK_SIZE);
     }
@@ -104,10 +119,12 @@ static void play_chirp(void)
     for (int b = 0; b < 5; b++) {
         ret = k_mem_slab_alloc(&i2s_mem_slab, &mem_block, K_NO_WAIT);
         if (ret < 0) return;
-        pcm = (int16_t *)mem_block;
-        for (int i = 0; i < 160; i++) {
+        pcm = (int32_t *)mem_block;
+        for (int i = 0; i < I2S_BLOCK_SAMPLES; i++) {
              // Square wave: 0-7 High, 8-15 Low (repeat every 16 samples)
-             pcm[i] = ((i % 16) < 8) ? 0x2000 : -0x2000;
+             int32_t val = ((i % 16) < 8) ? amp : -amp;
+             pcm[2*i] = val;
+             pcm[2*i+1] = val;
         }
         i2s_write(i2s_dev, mem_block, PCM_BLOCK_SIZE);
     }
@@ -136,8 +153,29 @@ static void audio_recv_cb(const uint8_t *data, size_t len)
     int ret = k_mem_slab_alloc(&i2s_mem_slab, &mem_block, K_NO_WAIT);
     if (ret < 0) return;
 
-    size_t copy_len = len > PCM_BLOCK_SIZE ? PCM_BLOCK_SIZE : len;
-    memcpy(mem_block, data, copy_len);
+    // Incoming data is 16-bit Mono (LE Audio Standard)
+    // Output is 32-bit Stereo (I2S Hardware)
+
+    int32_t *dst = (int32_t *)mem_block;
+    const int16_t *src = (const int16_t *)data;
+    size_t samples = len / sizeof(int16_t);
+
+    // Ensure we don't overflow the block
+    if (samples > I2S_BLOCK_SAMPLES) {
+        samples = I2S_BLOCK_SAMPLES;
+    }
+
+    for (size_t i = 0; i < samples; i++) {
+        // Expand 16-bit to 32-bit (shift to MSB)
+        int32_t val = ((int32_t)src[i]) << 16;
+        dst[2*i] = val;     // Left
+        dst[2*i+1] = val;   // Right
+    }
+
+    // Fill remaining if any (shouldn't happen with fixed 10ms frames)
+    if (samples < I2S_BLOCK_SAMPLES) {
+        memset(&dst[2*samples], 0, (I2S_BLOCK_SAMPLES - samples) * 8);
+    }
 
     ret = i2s_write(i2s_dev, mem_block, PCM_BLOCK_SIZE);
     if (ret < 0) {
@@ -152,8 +190,8 @@ static int i2s_setup(void)
         return -ENODEV;
     }
 
-    i2s_cfg.word_size = 16;
-    i2s_cfg.channels = 1; // Mono
+    i2s_cfg.word_size = 32; // 32-bit for INMP441 (64x fs)
+    i2s_cfg.channels = 2;   // Stereo
     i2s_cfg.format = I2S_FMT_DATA_FORMAT_I2S;
     i2s_cfg.options = I2S_OPT_BIT_CLK_MASTER | I2S_OPT_FRAME_CLK_MASTER;
     i2s_cfg.frame_clk_freq = 16000; // Match 16kHz
@@ -186,8 +224,16 @@ void main(void)
     err = battery_init();
     if (err) LOG_ERR("Failed to init battery (err %d)", err);
 
+    audio_proc_init();
+
     err = i2s_setup();
     if (err) LOG_ERR("Failed to init I2S (err %d)", err);
+
+    if (!device_is_ready(amp_dev)) {
+        LOG_WRN("Audio amplifier not ready");
+    } else {
+        LOG_INF("Audio amplifier initialized");
+    }
 
     get_random_name(device_name, sizeof(device_name));
     bt_set_name(device_name);
@@ -220,13 +266,34 @@ void main(void)
     i2s_trigger(i2s_dev, I2S_DIR_RX, I2S_TRIGGER_START);
     i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_START);
 
+    // Buffer for 16-bit Stereo conversion (intermediate)
+    int16_t stereo_16bit[I2S_BLOCK_SAMPLES * 2];
+
     while (1) {
         // Handle Mic Data
-        size_t size = PCM_BLOCK_SIZE;
+        size_t size = PCM_BLOCK_SIZE; // 1280 bytes (32-bit Stereo)
         err = i2s_read(i2s_dev, &mic_buffer, &size);
         if (err == 0) {
-            // Note: Sending raw PCM. For real BAP compliance, this should be LC3 encoded.
-            le_audio_send(mic_buffer, size);
+            // Processing: 32-bit Stereo (I2S) -> 16-bit Stereo -> Audio Proc -> 16-bit Mono (LE Audio)
+
+            int32_t *src = (int32_t *)mic_buffer;
+
+            // 1. Convert 32-bit Stereo to 16-bit Stereo
+            for(int i=0; i < I2S_BLOCK_SAMPLES; i++) {
+                // Get top 16 bits of 24-bit data (in 32-bit slot)
+                // INMP441 outputs 24-bit data left-justified in the 32-bit frame
+                stereo_16bit[2*i]     = (int16_t)(src[2*i] >> 16);
+                stereo_16bit[2*i+1]   = (int16_t)(src[2*i+1] >> 16);
+            }
+
+            // 2. Audio Processing (Noise Cancelling)
+            // Expects interleaved 16-bit stereo. Returns 16-bit mono in the same buffer.
+            audio_proc_process(stereo_16bit, stereo_16bit, I2S_BLOCK_SAMPLES);
+
+            // 3. Send Mono Data
+            // The result is now in the first I2S_BLOCK_SAMPLES elements of stereo_16bit
+            le_audio_send((uint8_t *)stereo_16bit, I2S_BLOCK_SAMPLES * sizeof(int16_t));
+
             k_mem_slab_free(&i2s_mem_slab, &mic_buffer);
         }
 
